@@ -4,20 +4,27 @@ A small command-line AI assistant for learning how to build agentic AI with the 
 
 This project follows the roadmap in `FUNCTIONAL_SPEC.md`. The current version is:
 
-## v0.2 - File Reader Tool
+## v0.3 - Conversation History
 
 The app currently:
 
 - Loads an OpenAI API key from a local `.env` file.
 - Starts a simple terminal chat loop.
-- Sends each user message to the OpenAI Responses API.
+- Stores conversation history so the assistant can answer follow-up questions.
+- Saves conversation history to `conversation_history.json`.
+- Reloads saved conversation history when the app starts.
+- Lets the user clear saved conversation history.
 - Detects supported text file paths in user messages.
 - Reads local `.txt`, `.md`, `.py`, `.json`, and `.csv` files.
-- Adds file contents to the model input so the assistant can summarize or answer questions about the file.
+- Supports multiple file paths in a single user message.
+- Keeps file contents in runtime file memory so repeated references do not need to reread the file from disk.
+- Adds each referenced file's contents to the model input once so the assistant can summarize or answer questions about the files.
 - Prints the assistant's response.
 - Exits when the user types `exit`, `quit`, or `bye`.
 
-Later versions will add conversation history, structured outputs, logging, token usage, and streaming.
+`conversation_history.json` is ignored by git because it may contain local chat data.
+
+Later versions will add structured outputs, logging, token usage, and streaming.
 
 ## Setup
 
@@ -66,10 +73,51 @@ You can also ask questions about a file:
 𖨆 : what does testdoc.md say about setup?
 ```
 
+Ask about multiple supported files:
+
+```text
+𖨆 : compare README.md and FUNCTIONAL_SPEC.md
+```
+
+Ask a follow-up question that relies on earlier context:
+
+```text
+𖨆 : what version did you say this project is on?
+```
+
+Show the saved conversation history:
+
+```text
+history
+```
+
+Show files cached during the current run:
+
+```text
+file history
+```
+
+Clear the saved conversation history and runtime file memory:
+
+```text
+clear
+```
+
 To stop the app, type:
 
 ```text
 exit
+```
+
+## Test
+
+The current unit tests were generated with AI assistance as a learning scaffold.
+Review and adjust them as the app behavior changes.
+
+Run the test suite:
+
+```bash
+python3 -m unittest discover -s tests
 ```
 
 ## Project Roadmap
