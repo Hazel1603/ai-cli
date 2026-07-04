@@ -10,10 +10,10 @@ This repo is organized as a learning path. The `main` branch is the landing page
 | --- | --- | --- |
 | `main` | Overview | Project roadmap and branch navigation. |
 | `feature/v0.1` | Available | Basic chatbot using the OpenAI Responses API. |
+| `feature/v0.2` | Available | File reader tool for reading local text files. |
 
 Future branches will follow the same pattern:
 
-- `feature/v0.2` - File reader tool.
 - `feature/v0.3` - Conversation history.
 - `feature/v0.4` - Structured outputs.
 - `feature/v0.5` - Logging and token usage.
@@ -31,6 +31,12 @@ To view and run the first working version:
 
 ```bash
 git checkout feature/v0.1
+```
+
+To view the file reader version:
+
+```bash
+git checkout feature/v0.2
 ```
 
 After switching branches, read that branch's `README.md` for setup and run instructions.
