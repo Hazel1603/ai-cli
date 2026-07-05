@@ -4,7 +4,7 @@ A small command-line AI assistant for learning how to build agentic AI with the 
 
 This project follows the roadmap in `FUNCTIONAL_SPEC.md`. The current version is:
 
-## v0.3 - Conversation History
+## v0.4 - Structured Outputs
 
 The app currently:
 
@@ -19,12 +19,14 @@ The app currently:
 - Supports multiple file paths in a single user message.
 - Keeps file contents in runtime file memory so repeated references do not need to reread the file from disk.
 - Adds each referenced file's contents to the model input once so the assistant can summarize or answer questions about the files.
-- Prints the assistant's response.
+- Requests structured assistant responses using a JSON Schema.
+- Parses each model response into fields for `answer`, `summary`, `files_used`, and `follow_up_questions`.
+- Prints the assistant's answer, files used, and follow-up questions.
 - Exits when the user types `exit`, `quit`, or `bye`.
 
 `conversation_history.json` is ignored by git because it may contain local chat data.
 
-Later versions will add structured outputs, logging, token usage, and streaming.
+Later versions will add logging, token usage, and streaming.
 
 ## Setup
 

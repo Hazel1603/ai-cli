@@ -170,6 +170,78 @@ class FileMemoryTests(unittest.TestCase):
         self.assertEqual(prompt[0]["content"].count("File: README.md"), 1)
         self.assertEqual(prompt[0]["content"].count("File: testdoc.md"), 1)
 
+    def test_build_prompt_removes_metadata_from_model_messages(self):
+        conversation_history = [
+            {
+                "role": "user",
+                "content": "hello",
+                "metadata": {
+                    "used_file": False,
+                    "file_paths": [],
+                    "response_output": {"answer": "hidden app data"},
+                },
+            }
+        ]
+
+        prompt = main.build_prompt(conversation_history, {})
+
+        self.assertEqual(prompt, [{"role": "user", "content": "hello"}])
+
+
+class StructuredOutputTests(unittest.TestCase):
+    def test_assistant_response_schema_requires_expected_fields(self):
+        schema = main.ASSISTANT_RESPONSE_SCHEMA
+
+        self.assertEqual(schema["type"], "object")
+        self.assertFalse(schema["additionalProperties"])
+        self.assertEqual(
+            schema["required"],
+            ["answer", "summary", "files_used", "follow_up_questions"]
+        )
+        self.assertNotIn("required", schema["properties"])
+        self.assertNotIn("additionalProperties", schema["properties"])
+
+    def test_parse_response_returns_structured_output_dict(self):
+        class FakeResponse:
+            output_text = json.dumps({
+                "answer": "README.md explains the app.",
+                "summary": "Summarized README.md.",
+                "files_used": ["README.md"],
+                "follow_up_questions": [
+                    "How does file reading work?",
+                    "Where is conversation history saved?"
+                ],
+            })
+
+        parsed = main.parse_response(FakeResponse())
+
+        self.assertEqual(parsed["answer"], "README.md explains the app.")
+        self.assertEqual(parsed["files_used"], ["README.md"])
+        self.assertEqual(len(parsed["follow_up_questions"]), 2)
+
+    def test_ask_ai_sends_json_schema_response_format(self):
+        class FakeResponses:
+            def __init__(self):
+                self.kwargs = None
+
+            def create(self, **kwargs):
+                self.kwargs = kwargs
+                return "fake response"
+
+        class FakeClient:
+            def __init__(self):
+                self.responses = FakeResponses()
+
+        client = FakeClient()
+
+        response = main.ask_ai(client, [{"role": "user", "content": "hello"}])
+
+        self.assertEqual(response, "fake response")
+        format_config = client.responses.kwargs["text"]["format"]
+        self.assertEqual(format_config["type"], "json_schema")
+        self.assertTrue(format_config["strict"])
+        self.assertIs(format_config["schema"], main.ASSISTANT_RESPONSE_SCHEMA)
+
 
 if __name__ == "__main__":
     unittest.main()
