@@ -6,8 +6,10 @@ import os
 import sys
 import re
 import json
+import time
 
 # global variable to store conversation history
+MODEL_NAME = None
 HISTORY_FILE = Path("conversation_history.json")
 LOG_FILE = Path("usage_log.jsonl")
 TEXT_FILE_TYPES = {".txt", ".md", ".py", ".json", ".csv"}
@@ -97,6 +99,18 @@ def validate_openai_api_key():
         print("모 : (•̀ᴗ•́ )و OPENAI_API_KEY is set. Proceeding...")
         return api_key
 
+def validate_openai_model():
+    global MODEL_NAME
+    load_dotenv()
+
+    MODEL_NAME = os.getenv("OPENAI_MODEL")
+
+    if not MODEL_NAME:
+        print("모 : ∘ ∘ ∘ ( °ヮ° ) ? OPENAI_MODEL is not set. Add it to your .env file and try again! (˶ᵔᗜᵔ˶)ﾉﾞ")
+        sys.exit(1)
+    else:
+        print(f"모 : (•̀ᴗ•́ )و OPENAI_MODEL is set to '{MODEL_NAME}'. Proceeding...")
+        return MODEL_NAME
 
 # Default data object creation functions
 def create_default_metadata():
@@ -211,9 +225,10 @@ def print_usage():
         for line in file:
             try:
                 log_entry = json.loads(line)
-                input_tokens_total += log_entry["token_usage"]["input_tokens"]
-                output_tokens_total += log_entry["token_usage"]["output_tokens"]
-                total_tokens_total += log_entry["token_usage"]["total_tokens"]
+                usage = log_entry.get("token_usage", {})
+                input_tokens_total += usage.get("input_tokens", 0)
+                output_tokens_total += usage.get("output_tokens", 0)
+                total_tokens_total += usage.get("total_tokens", 0)
             except json.JSONDecodeError:
                 print("모 : ( ˶°ㅁ°) !! Error reading a log entry. Skipping.")
 
@@ -221,12 +236,12 @@ def print_usage():
 
 def print_usage_log():
     if not LOG_FILE.exists():
-        return []
+        print("모 : No usage log found.")
+        return
 
-    logs = []
-    for line in LOG_FILE.read_text(encoding="utf-8").splitlines():
-        logs.append(json.loads(line))
-    return logs
+    print("모 : Usage log:")
+    for i, line in enumerate(LOG_FILE.read_text(encoding="utf-8").splitlines(), 1):
+        print(f" {i}. {line}")
 
 def get_token_usage(response):
     usage = getattr(response, "usage", None)
@@ -303,27 +318,74 @@ def build_prompt(conversation_history, file_history):
     # print(json.dumps(prompt, indent=2))
     return prompt
 
-def ask_ai(client, conversation_history):
+def get_event_message(event):
+    message = getattr(event, "message", None)
+    if message:
+        return message
+
+    response = getattr(event, "response", None)
+    if response:
+        response_error = getattr(response, "error", None)
+        if response_error:
+            return getattr(response_error, "message", str(response_error))
+
+        incomplete_details = getattr(response, "incomplete_details", None)
+        if incomplete_details:
+            return str(incomplete_details)
+
+    return "No details provided."
+
+def ask_ai_stream(client, conversation_history):
+    streamed_text = ""
+    final_response = None
+    last_thinking_time = time.monotonic()
+
     try: 
-        response = client.responses.create(
-            model="gpt-5.5",
+        stream = client.responses.create(
+            model=MODEL_NAME,
             input=conversation_history,
             text={
                 "format": {
                     "type": "json_schema",
                     "name": "response",
                     "strict": True,
-                    "schema": ASSISTANT_RESPONSE_SCHEMA
+                    "schema": ASSISTANT_RESPONSE_SCHEMA,
                 }
-            }
+            },
+            stream=True,
         )
-        return response
+
+        print("모 : (╭ರ_•́) thinking", end="", flush=True)
+
+        for event in stream:
+            now = time.monotonic()
+
+            if now - last_thinking_time >= 0.5:
+                print(".", end="", flush=True)
+                last_thinking_time = now
+
+            if event.type == "response.output_text.delta":
+                streamed_text += event.delta
+
+            elif event.type == "response.completed":
+                final_response = event.response
+            elif event.type == "response.failed":
+                print(f"\n모 : The model response failed. {get_event_message(event)}")
+                return streamed_text, None
+            elif event.type == "response.incomplete":
+                print(f"\n모 : The model response was incomplete. {get_event_message(event)}")
+                return streamed_text, None
+            elif event.type == "error":
+                print(f"\n모 : A streaming error occurred. {get_event_message(event)}")
+                return streamed_text, None
+        print()
+        return streamed_text, final_response
     except OpenAIError as e:
         print(f"모 : ( ˶°ㅁ°) !! Something went wrong??? {e}")
+        return "", None
 
-def parse_response(response):
-    return json.loads(response.output_text)
-
+def parse_response_text(response_text):
+    return json.loads(response_text)
 
 # Main application loop
 def run_app(client):
@@ -334,100 +396,97 @@ def run_app(client):
     file_history = {}
     
     ## REPL-style loop for testing the Responses API
-    while True:
-        user_input = input("𖨆 : ")
+    try:
+        while True:
+            user_input = input("𖨆 : ")
 
-        if not user_input.strip():
-            continue  # Skip empty input
+            if not user_input.strip():
+                continue  # Skip empty input
 
-        if should_exit(user_input):
-            print("모 : Goodbye! (˶ᵔᗜᵔ˶)ﾉﾞ")
-            break
-        
-        if should_show_help(user_input):
-            print_help()
-            continue
-
-        if should_clear(user_input):
-            clear_history(conversation_history, file_history)
-            print("모 : Conversation history cleared! (˶ᵔᗜᵔ˶)ﾉﾞ")
-            continue
-        
-        if should_show_history(user_input):
-            print_conversation_history(conversation_history)
-            continue
-
-        if should_show_file_history(user_input):
-            print_file_history(file_history)
-            continue
-
-        if should_show_usage(user_input):
-            print_usage()
-            continue
-
-        if should_show_log(user_input):
-            logs = print_usage_log()
-            if logs:
-                print("모 : Usage log:")
-                for i, log in enumerate(logs):
-                    print(f" {i+1}. {json.dumps(log, indent=2)}")
-            else:
-                print("모 : No usage log found.")
-            continue
-
-        ## Check if the user input contains a valid text file path
-        file_paths = find_text_file_paths(user_input)
-        if file_paths:
-            readable_file_paths = []
-            for file_path in file_paths:
-                file_content = read_text_file(file_history, file_path)
-
-                if file_content is not None:
-                    readable_file_paths.append(file_path)
+            if should_exit(user_input):
+                print("모 : Goodbye! (˶ᵔᗜᵔ˶)ﾉﾞ")
+                break
             
-            if readable_file_paths:
-                print(f"모 : (•̀ᴗ•́ )و I found and read the following files: {', '.join(readable_file_paths)}")
-            else:
-                print("모 : ( ˶°ㅁ°) !! I couldn't read any of the specified files.")
+            if should_show_help(user_input):
+                print_help()
                 continue
 
-            metadata = {
-                "used_file": True,
-                "file_paths": readable_file_paths,
-            }
-            add_conversation_history(conversation_history, "user", user_input, metadata=metadata)
-        else :
-            add_conversation_history(conversation_history, "user", user_input)
-        
-        # Build the prompt and ask the AI model for a response
-        model_input = build_prompt(conversation_history, file_history)
-        response = ask_ai(client, model_input)
-
-        # Handle the AI model's response
-        if response:
-            token_usage = get_token_usage(response)
-            try:
-                parsed_response = parse_response(response)
-            except json.JSONDecodeError:
-                print("모 : ( ˶°ㅁ°) !! Error parsing the response. Please try again.")
-                add_usage_log("model_response_parse_error", user_input, token_usage, success=False)
+            if should_clear(user_input):
+                clear_history(conversation_history, file_history)
+                print("모 : Conversation history cleared! (˶ᵔᗜᵔ˶)ﾉﾞ")
+                continue
+            
+            if should_show_history(user_input):
+                print_conversation_history(conversation_history)
                 continue
 
-            answer = parsed_response.get("answer", "No answer provided.")
-            files_used = parsed_response.get("files_used", [])
-            follow_up_questions = parsed_response.get("follow_up_questions", [])
+            if should_show_file_history(user_input):
+                print_file_history(file_history)
+                continue
 
-            print_response(answer, files_used, follow_up_questions)
-            print_token_usage(token_usage)
+            if should_show_usage(user_input):
+                print_usage()
+                continue
 
-            add_conversation_history(conversation_history, "assistant", answer, metadata={"response_output": parsed_response, "token_usage": token_usage})
+            if should_show_log(user_input):
+                print_usage_log()
+                continue
 
-            add_usage_log("model_response", user_input, token_usage, files_used=files_used)
-        else: 
-            add_usage_log("model_response_error", user_input, create_empty_token_usage(), success=False)
-            print("모 : My brain shortcuited ( ꩜ ᯅ ꩜;)⁭ ⁭please try again ")
+            ## Check if the user input contains a valid text file path
+            file_paths = find_text_file_paths(user_input)
+            if file_paths:
+                readable_file_paths = []
+                for file_path in file_paths:
+                    file_content = read_text_file(file_history, file_path)
 
+                    if file_content is not None:
+                        readable_file_paths.append(file_path)
+                
+                if readable_file_paths:
+                    print(f"모 : (•̀ᴗ•́ )و I found and read the following files: {', '.join(readable_file_paths)}")
+                else:
+                    print("모 : ( ˶°ㅁ°) !! I couldn't read any of the specified files.")
+                    continue
+
+                metadata = {
+                    "used_file": True,
+                    "file_paths": readable_file_paths,
+                }
+                add_conversation_history(conversation_history, "user", user_input, metadata=metadata)
+            else :
+                add_conversation_history(conversation_history, "user", user_input)
+            
+            # Build the prompt and ask the AI model for a response
+            model_input = build_prompt(conversation_history, file_history)
+            response_text, response = ask_ai_stream(client, model_input)
+
+            # Handle the AI model's response
+            if response:
+                token_usage = get_token_usage(response)
+                try:
+                    parsed_response = parse_response_text(response_text)
+                except json.JSONDecodeError:
+                    print("모 : ( ˶°ㅁ°) !! Error parsing the response. Please try again.")
+                    add_usage_log("model_response_parse_error", user_input, token_usage, success=False)
+                    continue
+
+                answer = parsed_response.get("answer", "No answer provided.")
+                files_used = parsed_response.get("files_used", [])
+                follow_up_questions = parsed_response.get("follow_up_questions", [])
+
+                print_response(answer, files_used, follow_up_questions)
+                print_token_usage(token_usage)
+
+                add_conversation_history(conversation_history, "assistant", answer, metadata={"response_output": parsed_response, "token_usage": token_usage})
+
+                add_usage_log("model_response", user_input, token_usage, files_used=files_used)
+            else: 
+                add_usage_log("model_response_error", user_input, create_empty_token_usage(), success=False)
+                print("모 : My brain shortcuited ( ꩜ ᯅ ꩜;)⁭ ⁭please try again ")
+    except KeyboardInterrupt:
+        print("\n모 : Goodbye! (˶ᵔᗜᵔ˶)ﾉﾞ")
 def main():
+    validate_openai_model()
     api_key = validate_openai_api_key()
     client = OpenAI(api_key=api_key)
 

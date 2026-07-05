@@ -4,7 +4,7 @@ A small command-line AI assistant for learning how to build agentic AI with the 
 
 This project follows the roadmap in `FUNCTIONAL_SPEC.md`. The current version is:
 
-## v0.5 - Logging and Token Usage
+## v0.6 - Streaming Responses
 
 The app currently:
 
@@ -22,6 +22,9 @@ The app currently:
 - Adds each referenced file's contents to the model input once so the assistant can summarize or answer questions about the files.
 - Requests structured assistant responses using a JSON Schema.
 - Parses each model response into fields for `answer`, `summary`, `files_used`, and `follow_up_questions`.
+- Streams model response events internally while collecting structured JSON output.
+- Shows a thinking indicator while waiting for streamed response events.
+- Handles failed, incomplete, and error stream events gracefully.
 - Prints the assistant's answer, files used, and follow-up questions.
 - Prints token usage after each successful model response.
 - Saves usage log entries to `usage_log.jsonl`.
@@ -30,10 +33,9 @@ The app currently:
 - Lets the user show total token usage.
 - Lets the user show the detailed usage log.
 - Exits when the user types `exit`, `quit`, or `bye`.
+- Exits cleanly when the user presses Ctrl+C.
 
 `conversation_history.json` and `usage_log.jsonl` are ignored by git because they may contain local chat data.
-
-Later versions will add streaming.
 
 ## Setup
 
@@ -146,6 +148,19 @@ Run the test suite:
 ```bash
 python3 -m unittest discover -s tests
 ```
+
+## Possible Future Features
+
+- Read more text-based file types.
+- Ask questions across multiple files more deeply.
+- Summarize an entire folder.
+- Stream the final answer text directly in the terminal.
+- Add real OpenAI tool calling for filesystem actions.
+- Let the user choose the model from `.env`.
+- Add commands for deleting or exporting conversation history.
+- Add safer limits for very large files.
+- Improve usage log formatting for easier reading.
+- Save file history between app runs.
 
 ## Project Roadmap
 

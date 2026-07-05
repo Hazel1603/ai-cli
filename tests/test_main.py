@@ -7,6 +7,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
+from types import SimpleNamespace
 
 import main
 
@@ -201,32 +202,44 @@ class StructuredOutputTests(unittest.TestCase):
         self.assertNotIn("required", schema["properties"])
         self.assertNotIn("additionalProperties", schema["properties"])
 
-    def test_parse_response_returns_structured_output_dict(self):
-        class FakeResponse:
-            output_text = json.dumps({
-                "answer": "README.md explains the app.",
-                "summary": "Summarized README.md.",
-                "files_used": ["README.md"],
-                "follow_up_questions": [
-                    "How does file reading work?",
-                    "Where is conversation history saved?"
-                ],
-            })
+    def test_parse_response_text_returns_structured_output_dict(self):
+        response_text = json.dumps({
+            "answer": "README.md explains the app.",
+            "summary": "Summarized README.md.",
+            "files_used": ["README.md"],
+            "follow_up_questions": [
+                "How does file reading work?",
+                "Where is conversation history saved?"
+            ],
+        })
 
-        parsed = main.parse_response(FakeResponse())
+        parsed = main.parse_response_text(response_text)
 
         self.assertEqual(parsed["answer"], "README.md explains the app.")
         self.assertEqual(parsed["files_used"], ["README.md"])
         self.assertEqual(len(parsed["follow_up_questions"]), 2)
 
-    def test_ask_ai_sends_json_schema_response_format(self):
+    def test_ask_ai_stream_sends_json_schema_response_format(self):
         class FakeResponses:
             def __init__(self):
                 self.kwargs = None
 
             def create(self, **kwargs):
                 self.kwargs = kwargs
-                return "fake response"
+                return iter([
+                    SimpleNamespace(
+                        type="response.output_text.delta",
+                        delta='{"answer":"hello",',
+                    ),
+                    SimpleNamespace(
+                        type="response.output_text.delta",
+                        delta='"summary":"hi","files_used":[],"follow_up_questions":[]}',
+                    ),
+                    SimpleNamespace(
+                        type="response.completed",
+                        response="fake response",
+                    ),
+                ])
 
         class FakeClient:
             def __init__(self):
@@ -234,13 +247,94 @@ class StructuredOutputTests(unittest.TestCase):
 
         client = FakeClient()
 
-        response = main.ask_ai(client, [{"role": "user", "content": "hello"}])
+        with redirect_stdout(io.StringIO()):
+            response_text, response = main.ask_ai_stream(
+                client,
+                [{"role": "user", "content": "hello"}],
+            )
 
+        self.assertEqual(
+            response_text,
+            '{"answer":"hello","summary":"hi","files_used":[],"follow_up_questions":[]}'
+        )
         self.assertEqual(response, "fake response")
         format_config = client.responses.kwargs["text"]["format"]
         self.assertEqual(format_config["type"], "json_schema")
         self.assertTrue(format_config["strict"])
         self.assertIs(format_config["schema"], main.ASSISTANT_RESPONSE_SCHEMA)
+        self.assertTrue(client.responses.kwargs["stream"])
+
+
+class StreamingTests(unittest.TestCase):
+    def test_get_event_message_reads_direct_error_message(self):
+        event = SimpleNamespace(type="error", message="stream disconnected")
+
+        self.assertEqual(main.get_event_message(event), "stream disconnected")
+
+    def test_get_event_message_reads_response_error_message(self):
+        event = SimpleNamespace(
+            type="response.failed",
+            response=SimpleNamespace(
+                error=SimpleNamespace(message="model failed")
+            ),
+        )
+
+        self.assertEqual(main.get_event_message(event), "model failed")
+
+    def test_ask_ai_stream_prints_thinking_dot_after_half_second(self):
+        class FakeResponses:
+            def create(self, **kwargs):
+                return iter([
+                    SimpleNamespace(type="response.output_text.delta", delta='{"answer":"hello",'),
+                    SimpleNamespace(type="response.output_text.delta", delta='"summary":"hi",'),
+                    SimpleNamespace(type="response.output_text.delta", delta='"files_used":[],"follow_up_questions":[]}'),
+                    SimpleNamespace(type="response.completed", response="fake response"),
+                ])
+
+        class FakeClient:
+            responses = FakeResponses()
+
+        times = iter([0, 0.2, 0.7, 0.8, 0.9])
+
+        with patch.object(main.time, "monotonic", side_effect=lambda: next(times)):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                response_text, response = main.ask_ai_stream(
+                    FakeClient(),
+                    [{"role": "user", "content": "hello"}],
+                )
+
+        self.assertIn("thinking.", output.getvalue())
+        self.assertEqual(
+            response_text,
+            '{"answer":"hello","summary":"hi","files_used":[],"follow_up_questions":[]}'
+        )
+        self.assertEqual(response, "fake response")
+
+    def test_ask_ai_stream_returns_none_for_failed_event(self):
+        class FakeResponses:
+            def create(self, **kwargs):
+                return iter([
+                    SimpleNamespace(type="response.output_text.delta", delta="partial"),
+                    SimpleNamespace(
+                        type="response.failed",
+                        response=SimpleNamespace(
+                            error=SimpleNamespace(message="model failed")
+                        ),
+                    ),
+                ])
+
+        class FakeClient:
+            responses = FakeResponses()
+
+        with redirect_stdout(io.StringIO()):
+            response_text, response = main.ask_ai_stream(
+                FakeClient(),
+                [{"role": "user", "content": "hello"}],
+            )
+
+        self.assertEqual(response_text, "partial")
+        self.assertIsNone(response)
 
 
 class UsageLoggingTests(unittest.TestCase):
