@@ -12,10 +12,10 @@ This repo is organized as a learning path. The `main` branch is the landing page
 | `feature/v0.1` | Available | Basic chatbot using the OpenAI Responses API. |
 | `feature/v0.2` | Available | File reader tool for reading local text files. |
 | `feature/v0.3` | Available | Conversation history with saved JSON history, clear/history commands, and runtime file memory. |
+| `feature/v0.4` | Available | Structured outputs with JSON Schema responses, parsed answer fields, files used, and follow-up questions. |
 
 Future branches will follow the same pattern:
 
-- `feature/v0.4` - Structured outputs.
 - `feature/v0.5` - Logging and token usage.
 - `feature/v0.6` - Streaming responses.
 
@@ -45,6 +45,12 @@ To view the conversation history version:
 git checkout feature/v0.3
 ```
 
+To view the structured outputs version:
+
+```bash
+git checkout feature/v0.4
+```
+
 After switching branches, read that branch's `README.md` for setup and run instructions.
 
 To see all local branches:
@@ -66,7 +72,7 @@ The project follows the plan in `FUNCTIONAL_SPEC.md`:
 - v0.1 - Basic chatbot using the Responses API.
 - v0.2 - File reader tool.
 - v0.3 - Conversation history, JSON persistence, history commands, multiple file references, and runtime file memory.
-- v0.4 - Structured outputs.
+- v0.4 - Structured outputs with JSON Schema responses.
 - v0.5 - Logging and token usage.
 - v0.6 - Streaming responses.
 
