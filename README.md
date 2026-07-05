@@ -13,10 +13,10 @@ This repo is organized as a learning path. The `main` branch is the landing page
 | `feature/v0.2` | Available | File reader tool for reading local text files. |
 | `feature/v0.3` | Available | Conversation history with saved JSON history, clear/history commands, and runtime file memory. |
 | `feature/v0.4` | Available | Structured outputs with JSON Schema responses, parsed answer fields, files used, and follow-up questions. |
+| `feature/v0.5` | Available | Logging and token usage with JSONL usage logs, token totals, and usage/log commands. |
 
 Future branches will follow the same pattern:
 
-- `feature/v0.5` - Logging and token usage.
 - `feature/v0.6` - Streaming responses.
 
 ## How To Navigate
@@ -49,6 +49,12 @@ To view the structured outputs version:
 
 ```bash
 git checkout feature/v0.4
+```
+
+To view the logging and token usage version:
+
+```bash
+git checkout feature/v0.5
 ```
 
 After switching branches, read that branch's `README.md` for setup and run instructions.
