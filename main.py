@@ -9,6 +9,7 @@ import json
 
 # global variable to store conversation history
 HISTORY_FILE = Path("conversation_history.json")
+LOG_FILE = Path("usage_log.jsonl")
 TEXT_FILE_TYPES = {".txt", ".md", ".py", ".json", ".csv"}
 
 ASSISTANT_RESPONSE_SCHEMA = {
@@ -46,6 +47,8 @@ ASSISTANT_RESPONSE_SCHEMA = {
     "additionalProperties": False
 }
 
+
+# User input handling functions
 def should_exit(user_input):
     return user_input.lower() in {"exit", "quit", "bye"}
 
@@ -58,6 +61,30 @@ def should_show_history(user_input):
 def should_show_file_history(user_input):
     return user_input.lower() in {"file history", "show file history"}
 
+def should_show_usage(user_input):
+    return user_input.lower() in {"usage", "show usage", "token usage"}
+
+def should_show_log(user_input):
+    return user_input.lower() in {"log", "show log", "usage log"}
+
+def should_show_help(user_input):
+    return user_input.lower() in {"help", "show help", "commands"}
+
+def print_help():
+    help_text = """
+모 : Here are some commands you can use:
+- 'exit', 'quit', 'bye' : Exit the application.
+- 'clear', 'reset', 'forget' : Clear the conversation history.
+- 'history', 'show history', 'conversation history' : Show the conversation history.
+- 'file history', 'show file history' : Show the file history.
+- 'usage', 'show usage', 'token usage' : Show the total token usage.
+- 'log', 'show log', 'usage log' : Show the detailed usage log.
+You can also ask questions or provide input as usual. If you include a file path (e.g., './example.txt'), the assistant will read the file and use its content to answer your question.
+"""
+    print(help_text)
+
+
+# Validation Methods
 def validate_openai_api_key():
     load_dotenv()
 
@@ -70,6 +97,34 @@ def validate_openai_api_key():
         print("모 : (•̀ᴗ•́ )و OPENAI_API_KEY is set. Proceeding...")
         return api_key
 
+
+# Default data object creation functions
+def create_default_metadata():
+    return {
+        "timestamp": datetime.now().isoformat(),
+        "used_file": False,
+        "file_paths": [],
+        "response_output": {}
+    }
+
+def create_empty_token_usage():
+    return {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+    }
+
+def create_default_logging():
+    return {
+        "timestamp": datetime.now().isoformat(),
+        "event": "",
+        "user_input": "",
+        "token_usage": create_empty_token_usage(),
+        "success": True
+    }
+
+
+# Text file handling functions
 def find_text_file_paths(user_input):
     matches = re.findall(
         r"(?:\.\/)?(?:[\w.-]+\/)*[\w.-]+\.(?:txt|md|py|json|csv)\b",
@@ -93,6 +148,8 @@ def read_text_file(file_history, user_filename):
     else:
         return None
 
+
+# Conversation history handling functions
 def save_conversation_history(conversation_history):
     HISTORY_FILE.write_text(
         json.dumps(conversation_history, indent=2),
@@ -110,6 +167,112 @@ def load_conversation_history():
         print("모 : ( ˶°ㅁ°) !! Error loading conversation history. Starting fresh.")
         return []
 
+def add_conversation_history(conversation_history, user, content, metadata=None):
+    history = {"role": user, "content": content, "metadata": create_default_metadata()}
+
+    if metadata:
+        history["metadata"].update(metadata)
+
+    conversation_history.append(history)
+    save_conversation_history(conversation_history)
+
+def print_conversation_history(conversation_history):
+    print("모 : Conversation history:")
+    for i, msg in enumerate(conversation_history):
+        print(f" {i+1}. {msg.get('role', '???')}: {msg.get('content', '!!!')}")
+
+
+# File History handling functions
+def save_file_history(file_history, file_path, file_content):
+    file_history[file_path] = file_content
+
+def print_file_history(file_history):
+    print("모 : File history:")
+    for i, (file_path, file_content) in enumerate(file_history.items()):
+        print(f" {i+1}. {file_path}: {file_content[:100]}...")  # Show first 100 chars
+
+def clear_history(conversation_history, file_history):
+    conversation_history.clear()
+    file_history.clear()
+    save_conversation_history(conversation_history)
+
+
+# Token Usage handling functions
+def print_usage():
+    if not LOG_FILE.exists():
+        print("모 : No usage log found.")
+        return
+
+    input_tokens_total = 0
+    output_tokens_total = 0
+    total_tokens_total = 0
+    
+    with LOG_FILE.open("r", encoding="utf-8") as file:
+        for line in file:
+            try:
+                log_entry = json.loads(line)
+                input_tokens_total += log_entry["token_usage"]["input_tokens"]
+                output_tokens_total += log_entry["token_usage"]["output_tokens"]
+                total_tokens_total += log_entry["token_usage"]["total_tokens"]
+            except json.JSONDecodeError:
+                print("모 : ( ˶°ㅁ°) !! Error reading a log entry. Skipping.")
+
+    print(f"모 : Tokens used: {total_tokens_total} total, {input_tokens_total} input, {output_tokens_total} output")
+
+def print_usage_log():
+    if not LOG_FILE.exists():
+        return []
+
+    logs = []
+    for line in LOG_FILE.read_text(encoding="utf-8").splitlines():
+        logs.append(json.loads(line))
+    return logs
+
+def get_token_usage(response):
+    usage = getattr(response, "usage", None)
+    if usage:
+        return {
+            "input_tokens": getattr(usage, "input_tokens", 0),
+            "output_tokens": getattr(usage, "output_tokens", 0),
+            "total_tokens": getattr(usage, "total_tokens", 0)
+        }
+    else:
+        return create_empty_token_usage()
+
+def add_usage_log(event, user_input, usage, files_used=None, success=None):
+    log_entry = create_default_logging()
+    log_entry.update({
+        "event": event,
+        "user_input": user_input,
+        "token_usage": usage
+    })
+    if files_used is not None:
+        log_entry.update({"files_used": files_used})
+    if success is not None:
+        log_entry.update({"success": success})
+
+    with LOG_FILE.open("a", encoding="utf-8") as file:
+        file.write(json.dumps(log_entry) + "\n")
+
+
+# Print functions
+def print_response(answer, files_used, follow_up_questions):
+    print("모 : " + answer)
+    if files_used:
+        print("모 : " + "Files used: " + ", ".join(files_used))
+    if follow_up_questions:
+        print("모 : " + "Follow-up questions:\n" + "\n".join(follow_up_questions))
+
+def print_token_usage(token_usage):
+    print(
+        f"모 : Tokens used: "
+        f"{token_usage['input_tokens']} input, "
+        f"{token_usage['output_tokens']} output, "
+        f"{token_usage['total_tokens']} total"
+    )
+
+
+# Prompt building and AI interaction functions
 def build_prompt(conversation_history, file_history):
     prompt = []
     included_files = []
@@ -161,26 +324,8 @@ def ask_ai(client, conversation_history):
 def parse_response(response):
     return json.loads(response.output_text)
 
-def create_default_metadata():
-    return {
-        "timestamp": datetime.now().isoformat(),
-        "used_file": False,
-        "file_paths": [],
-        "response_output": {}
-    }
 
-def add_conversation_history(conversation_history, user, content, metadata=None):
-    history = {"role": user, "content": content, "metadata": create_default_metadata()}
-
-    if metadata:
-        history["metadata"].update(metadata)
-
-    conversation_history.append(history)
-    save_conversation_history(conversation_history)
-
-def save_file_history(file_history, file_path, file_content):
-    file_history[file_path] = file_content
-
+# Main application loop
 def run_app(client):
     print("모 : Hello! I'm your AI assistant ₍₍⚞(˶>ᗜ<˶)⚟⁾⁾ Type 'exit' or 'quit' to end the conversation.")
 
@@ -192,27 +337,42 @@ def run_app(client):
     while True:
         user_input = input("𖨆 : ")
 
+        if not user_input.strip():
+            continue  # Skip empty input
+
         if should_exit(user_input):
             print("모 : Goodbye! (˶ᵔᗜᵔ˶)ﾉﾞ")
             break
         
+        if should_show_help(user_input):
+            print_help()
+            continue
+
         if should_clear(user_input):
-            conversation_history.clear()
-            file_history.clear()
-            save_conversation_history(conversation_history)
+            clear_history(conversation_history, file_history)
             print("모 : Conversation history cleared! (˶ᵔᗜᵔ˶)ﾉﾞ")
             continue
         
         if should_show_history(user_input):
-            print("모 : Conversation history:")
-            for i, msg in enumerate(conversation_history):
-                print(f" {i+1}. {msg.get('role', '???')}: {msg.get('content', '!!!')}")
+            print_conversation_history(conversation_history)
             continue
 
         if should_show_file_history(user_input):
-            print("모 : File history:")
-            for i, (file_path, file_content) in enumerate(file_history.items()):
-                print(f" {i+1}. {file_path}: {file_content[:100]}...")  # Show first 100 chars
+            print_file_history(file_history)
+            continue
+
+        if should_show_usage(user_input):
+            print_usage()
+            continue
+
+        if should_show_log(user_input):
+            logs = print_usage_log()
+            if logs:
+                print("모 : Usage log:")
+                for i, log in enumerate(logs):
+                    print(f" {i+1}. {json.dumps(log, indent=2)}")
+            else:
+                print("모 : No usage log found.")
             continue
 
         ## Check if the user input contains a valid text file path
@@ -239,26 +399,32 @@ def run_app(client):
         else :
             add_conversation_history(conversation_history, "user", user_input)
         
+        # Build the prompt and ask the AI model for a response
         model_input = build_prompt(conversation_history, file_history)
         response = ask_ai(client, model_input)
 
+        # Handle the AI model's response
         if response:
+            token_usage = get_token_usage(response)
             try:
                 parsed_response = parse_response(response)
             except json.JSONDecodeError:
                 print("모 : ( ˶°ㅁ°) !! Error parsing the response. Please try again.")
+                add_usage_log("model_response_parse_error", user_input, token_usage, success=False)
                 continue
+
             answer = parsed_response.get("answer", "No answer provided.")
             files_used = parsed_response.get("files_used", [])
             follow_up_questions = parsed_response.get("follow_up_questions", [])
-            print("모 : " + answer)
-            if files_used:
-                print("모 : " + "Files used: " + ", ".join(files_used))
-            if follow_up_questions:
-                print("모 : " + "Follow-up questions:\n" + "\n".join(follow_up_questions))
 
-            add_conversation_history(conversation_history, "assistant", answer, metadata={"response_output": parsed_response})
+            print_response(answer, files_used, follow_up_questions)
+            print_token_usage(token_usage)
+
+            add_conversation_history(conversation_history, "assistant", answer, metadata={"response_output": parsed_response, "token_usage": token_usage})
+
+            add_usage_log("model_response", user_input, token_usage, files_used=files_used)
         else: 
+            add_usage_log("model_response_error", user_input, create_empty_token_usage(), success=False)
             print("모 : My brain shortcuited ( ꩜ ᯅ ꩜;)⁭ ⁭please try again ")
 
 def main():

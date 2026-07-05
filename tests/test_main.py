@@ -243,5 +243,86 @@ class StructuredOutputTests(unittest.TestCase):
         self.assertIs(format_config["schema"], main.ASSISTANT_RESPONSE_SCHEMA)
 
 
+class UsageLoggingTests(unittest.TestCase):
+    def test_create_empty_token_usage_returns_zero_counts(self):
+        usage = main.create_empty_token_usage()
+
+        self.assertEqual(
+            usage,
+            {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+            }
+        )
+
+    def test_get_token_usage_returns_response_usage_counts(self):
+        class FakeUsage:
+            input_tokens = 12
+            output_tokens = 34
+            total_tokens = 46
+
+        class FakeResponse:
+            usage = FakeUsage()
+
+        usage = main.get_token_usage(FakeResponse())
+
+        self.assertEqual(
+            usage,
+            {
+                "input_tokens": 12,
+                "output_tokens": 34,
+                "total_tokens": 46,
+            }
+        )
+
+    def test_get_token_usage_returns_zero_counts_when_usage_is_missing(self):
+        class FakeResponse:
+            pass
+
+        usage = main.get_token_usage(FakeResponse())
+
+        self.assertEqual(usage, main.create_empty_token_usage())
+
+    def test_add_usage_log_writes_one_jsonl_entry(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_file = Path(temp_dir) / "usage_log.jsonl"
+            usage = {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15,
+            }
+
+            with patch.object(main, "LOG_FILE", log_file):
+                main.add_usage_log("model_response", "hello", usage)
+
+            lines = log_file.read_text(encoding="utf-8").splitlines()
+            log_entry = json.loads(lines[0])
+
+            self.assertEqual(len(lines), 1)
+            self.assertEqual(log_entry["event"], "model_response")
+            self.assertEqual(log_entry["user_input"], "hello")
+            self.assertEqual(log_entry["token_usage"], usage)
+            self.assertTrue(log_entry["success"])
+            self.assertIn("timestamp", log_entry)
+
+    def test_add_usage_log_can_record_failed_events(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_file = Path(temp_dir) / "usage_log.jsonl"
+
+            with patch.object(main, "LOG_FILE", log_file):
+                main.add_usage_log(
+                    "model_response_error",
+                    "hello",
+                    main.create_empty_token_usage(),
+                    success=False
+                )
+
+            log_entry = json.loads(log_file.read_text(encoding="utf-8"))
+
+            self.assertEqual(log_entry["event"], "model_response_error")
+            self.assertFalse(log_entry["success"])
+
+
 if __name__ == "__main__":
     unittest.main()

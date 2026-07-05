@@ -4,12 +4,13 @@ A small command-line AI assistant for learning how to build agentic AI with the 
 
 This project follows the roadmap in `FUNCTIONAL_SPEC.md`. The current version is:
 
-## v0.4 - Structured Outputs
+## v0.5 - Logging and Token Usage
 
 The app currently:
 
 - Loads an OpenAI API key from a local `.env` file.
 - Starts a simple terminal chat loop.
+- Shows a help menu for supported commands.
 - Stores conversation history so the assistant can answer follow-up questions.
 - Saves conversation history to `conversation_history.json`.
 - Reloads saved conversation history when the app starts.
@@ -22,11 +23,17 @@ The app currently:
 - Requests structured assistant responses using a JSON Schema.
 - Parses each model response into fields for `answer`, `summary`, `files_used`, and `follow_up_questions`.
 - Prints the assistant's answer, files used, and follow-up questions.
+- Prints token usage after each successful model response.
+- Saves usage log entries to `usage_log.jsonl`.
+- Logs successful model responses, JSON parse errors, and model response errors.
+- Includes token usage, user input, success status, and files used when available in usage logs.
+- Lets the user show total token usage.
+- Lets the user show the detailed usage log.
 - Exits when the user types `exit`, `quit`, or `bye`.
 
-`conversation_history.json` is ignored by git because it may contain local chat data.
+`conversation_history.json` and `usage_log.jsonl` are ignored by git because they may contain local chat data.
 
-Later versions will add logging, token usage, and streaming.
+Later versions will add streaming.
 
 ## Setup
 
@@ -97,6 +104,24 @@ Show files cached during the current run:
 
 ```text
 file history
+```
+
+Show total token usage:
+
+```text
+usage
+```
+
+Show the detailed usage log:
+
+```text
+log
+```
+
+Show available commands:
+
+```text
+help
 ```
 
 Clear the saved conversation history and runtime file memory:
