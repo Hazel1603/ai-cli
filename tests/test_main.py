@@ -12,6 +12,38 @@ from types import SimpleNamespace
 import main
 
 
+def make_usage(input_tokens, output_tokens):
+    return SimpleNamespace(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=input_tokens + output_tokens,
+    )
+
+
+def make_response(output_items, input_tokens=1, output_tokens=2):
+    return SimpleNamespace(
+        output=output_items,
+        usage=make_usage(input_tokens, output_tokens),
+    )
+
+
+class FakeToolCall:
+    type = "function_call"
+    name = "read_text_file"
+
+    def __init__(self, call_id, path):
+        self.call_id = call_id
+        self.arguments = json.dumps({"path": path})
+
+    def model_dump(self, exclude_none=True):
+        return {
+            "type": self.type,
+            "name": self.name,
+            "call_id": self.call_id,
+            "arguments": self.arguments,
+        }
+
+
 class CommandTests(unittest.TestCase):
     def test_should_exit_accepts_exit_commands(self):
         self.assertTrue(main.should_exit("exit"))
@@ -132,7 +164,7 @@ class FileMemoryTests(unittest.TestCase):
 
         self.assertEqual(result, "cached content")
 
-    def test_build_prompt_adds_each_file_context_once(self):
+    def test_build_prompt_does_not_inject_file_context(self):
         conversation_history = [
             {
                 "role": "user",
@@ -159,17 +191,17 @@ class FileMemoryTests(unittest.TestCase):
                 },
             },
         ]
-        file_history = {
-            "README.md": "readme contents",
-            "testdoc.md": "testdoc contents",
-        }
 
         with redirect_stdout(io.StringIO()):
-            prompt = main.build_prompt(conversation_history, file_history)
+            prompt = main.build_prompt(conversation_history)
 
-        self.assertEqual(prompt[0]["role"], "developer")
-        self.assertEqual(prompt[0]["content"].count("File: README.md"), 1)
-        self.assertEqual(prompt[0]["content"].count("File: testdoc.md"), 1)
+        self.assertEqual(prompt[0], {
+            "role": "user",
+            "content": "summarize README.md",
+        })
+        prompt_text = json.dumps(prompt)
+        self.assertNotIn("File: README.md", prompt_text)
+        self.assertNotIn("readme contents", prompt_text)
 
     def test_build_prompt_removes_metadata_from_model_messages(self):
         conversation_history = [
@@ -184,7 +216,7 @@ class FileMemoryTests(unittest.TestCase):
             }
         ]
 
-        prompt = main.build_prompt(conversation_history, {})
+        prompt = main.build_prompt(conversation_history)
 
         self.assertEqual(prompt, [{"role": "user", "content": "hello"}])
 
@@ -335,6 +367,184 @@ class StreamingTests(unittest.TestCase):
 
         self.assertEqual(response_text, "partial")
         self.assertIsNone(response)
+
+
+class ToolCallingTests(unittest.TestCase):
+    def test_execute_read_text_file_tool_returns_file_content(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            file_path = Path(temp_dir) / "notes.md"
+            file_path.write_text("tool content", encoding="utf-8")
+            file_history = {}
+
+            with redirect_stdout(io.StringIO()):
+                tool_output, used_path = main.execute_read_text_file_tool(
+                    file_history,
+                    json.dumps({"path": str(file_path)}),
+                )
+
+        parsed_output = json.loads(tool_output)
+
+        self.assertTrue(parsed_output["success"])
+        self.assertEqual(parsed_output["content"], "tool content")
+        self.assertEqual(used_path, str(file_path))
+
+    def test_execute_read_text_file_tool_reports_invalid_arguments(self):
+        with redirect_stdout(io.StringIO()):
+            tool_output, used_path = main.execute_read_text_file_tool({}, "{bad json")
+
+        parsed_output = json.loads(tool_output)
+
+        self.assertFalse(parsed_output["success"])
+        self.assertIn("not valid JSON", parsed_output["error"])
+        self.assertIsNone(used_path)
+
+    def test_ask_ai_with_tools_returns_final_response_when_no_tool_needed(self):
+        final_response = make_response([], input_tokens=3, output_tokens=4)
+
+        with patch.object(
+            main,
+            "ask_ai_stream",
+            return_value=('{"answer":"hi","summary":"hi","files_used":[],"follow_up_questions":[]}', final_response),
+        ) as mock_ask:
+            response_text, response, files_used, token_usage = main.ask_ai_with_tools(
+                client=None,
+                model_input=[{"role": "user", "content": "hello"}],
+                file_history={},
+            )
+
+        self.assertEqual(response, final_response)
+        self.assertEqual(files_used, [])
+        self.assertEqual(response_text, '{"answer":"hi","summary":"hi","files_used":[],"follow_up_questions":[]}')
+        self.assertEqual(token_usage, {
+            "input_tokens": 3,
+            "output_tokens": 4,
+            "total_tokens": 7,
+        })
+        self.assertEqual(mock_ask.call_count, 1)
+        self.assertEqual(mock_ask.call_args.kwargs["tools"], [main.READ_TEXT_FILE_TOOL])
+
+    def test_ask_ai_with_tools_executes_single_tool_call(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            file_path = Path(temp_dir) / "notes.md"
+            file_path.write_text("hello from tool", encoding="utf-8")
+            tool_response = make_response(
+                [FakeToolCall("call_1", str(file_path))],
+                input_tokens=5,
+                output_tokens=1,
+            )
+            final_response = make_response([], input_tokens=7, output_tokens=8)
+
+            with patch.object(
+                main,
+                "ask_ai_stream",
+                side_effect=[
+                    ("", tool_response),
+                    ('{"answer":"done","summary":"done","files_used":[],"follow_up_questions":[]}', final_response),
+                ],
+            ) as mock_ask:
+                with redirect_stdout(io.StringIO()):
+                    response_text, response, files_used, token_usage = main.ask_ai_with_tools(
+                        client=None,
+                        model_input=[{"role": "user", "content": "summarize notes"}],
+                        file_history={},
+                    )
+
+        second_input = mock_ask.call_args_list[1].args[1]
+        tool_outputs = [
+            item for item in second_input
+            if isinstance(item, dict) and item.get("type") == "function_call_output"
+        ]
+        parsed_tool_output = json.loads(tool_outputs[0]["output"])
+
+        self.assertEqual(response, final_response)
+        self.assertEqual(response_text, '{"answer":"done","summary":"done","files_used":[],"follow_up_questions":[]}')
+        self.assertEqual(files_used, [str(file_path)])
+        self.assertEqual(parsed_tool_output["content"], "hello from tool")
+        self.assertEqual(tool_outputs[0]["call_id"], "call_1")
+        self.assertEqual(token_usage, {
+            "input_tokens": 12,
+            "output_tokens": 9,
+            "total_tokens": 21,
+        })
+
+    def test_ask_ai_with_tools_supports_multiple_tool_rounds(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first_file = Path(temp_dir) / "first.md"
+            second_file = Path(temp_dir) / "second.md"
+            first_file.write_text("read second.md next", encoding="utf-8")
+            second_file.write_text("final clue", encoding="utf-8")
+
+            first_tool_response = make_response(
+                [FakeToolCall("call_1", str(first_file))],
+                input_tokens=2,
+                output_tokens=1,
+            )
+            second_tool_response = make_response(
+                [FakeToolCall("call_2", str(second_file))],
+                input_tokens=3,
+                output_tokens=1,
+            )
+            final_response = make_response([], input_tokens=4, output_tokens=5)
+
+            with patch.object(
+                main,
+                "ask_ai_stream",
+                side_effect=[
+                    ("", first_tool_response),
+                    ("", second_tool_response),
+                    ('{"answer":"done","summary":"done","files_used":[],"follow_up_questions":[]}', final_response),
+                ],
+            ) as mock_ask:
+                with redirect_stdout(io.StringIO()):
+                    response_text, response, files_used, token_usage = main.ask_ai_with_tools(
+                        client=None,
+                        model_input=[{"role": "user", "content": "follow trail"}],
+                        file_history={},
+                    )
+
+        third_input = mock_ask.call_args_list[2].args[1]
+        tool_outputs = [
+            item for item in third_input
+            if isinstance(item, dict) and item.get("type") == "function_call_output"
+        ]
+
+        self.assertEqual(response, final_response)
+        self.assertEqual(response_text, '{"answer":"done","summary":"done","files_used":[],"follow_up_questions":[]}')
+        self.assertEqual(files_used, [str(first_file), str(second_file)])
+        self.assertEqual([item["call_id"] for item in tool_outputs], ["call_1", "call_2"])
+        self.assertEqual(token_usage, {
+            "input_tokens": 9,
+            "output_tokens": 7,
+            "total_tokens": 16,
+        })
+
+    def test_ask_ai_with_tools_stops_at_max_tool_rounds(self):
+        tool_responses = [
+            ("", make_response(
+                [FakeToolCall(f"call_{index}", "missing.md")],
+                input_tokens=1,
+                output_tokens=1,
+            ))
+            for index in range(main.MAX_TOOL_CALL_ROUNDS + 1)
+        ]
+
+        with patch.object(main, "ask_ai_stream", side_effect=tool_responses) as mock_ask:
+            with redirect_stdout(io.StringIO()):
+                response_text, response, files_used, token_usage = main.ask_ai_with_tools(
+                    client=None,
+                    model_input=[{"role": "user", "content": "loop"}],
+                    file_history={},
+                )
+
+        self.assertEqual(response_text, "")
+        self.assertIsNone(response)
+        self.assertEqual(files_used, [])
+        self.assertEqual(mock_ask.call_count, main.MAX_TOOL_CALL_ROUNDS + 1)
+        self.assertEqual(token_usage, {
+            "input_tokens": main.MAX_TOOL_CALL_ROUNDS + 1,
+            "output_tokens": main.MAX_TOOL_CALL_ROUNDS + 1,
+            "total_tokens": (main.MAX_TOOL_CALL_ROUNDS + 1) * 2,
+        })
 
 
 class UsageLoggingTests(unittest.TestCase):

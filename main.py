@@ -10,6 +10,7 @@ import time
 
 # global variable to store conversation history
 MODEL_NAME = None
+MAX_TOOL_CALL_ROUNDS = 5
 HISTORY_FILE = Path("conversation_history.json")
 LOG_FILE = Path("usage_log.jsonl")
 TEXT_FILE_TYPES = {".txt", ".md", ".py", ".json", ".csv"}
@@ -47,6 +48,28 @@ ASSISTANT_RESPONSE_SCHEMA = {
         "follow_up_questions"
     ],
     "additionalProperties": False
+}
+
+# Tool definition for reading text files
+READ_TEXT_FILE_TOOL = {
+    "type": "function",
+    "name": "read_text_file",
+    "description": (
+        "Read a local text file when the user asks about a file. "
+        "Supports .txt, .md, .py, .json, and .csv files."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "The local file path to read."
+            }
+        },
+        "required": ["path"],
+        "additionalProperties": False
+    },
+    "strict": True
 }
 
 
@@ -138,7 +161,7 @@ def create_default_logging():
     }
 
 
-# Text file handling functions
+# Text file Tool Functions
 def find_text_file_paths(user_input):
     matches = re.findall(
         r"(?:\.\/)?(?:[\w.-]+\/)*[\w.-]+\.(?:txt|md|py|json|csv)\b",
@@ -161,6 +184,38 @@ def read_text_file(file_history, user_filename):
         return file_content
     else:
         return None
+
+def execute_read_text_file_tool(file_history, arguments):
+    # print("모 : ^⎚-⎚^ Executing read file tool...")
+    try:
+        tool_args = json.loads(arguments or "{}")
+    except json.JSONDecodeError:
+        return json.dumps({
+            "success": False,
+            "error": "Tool arguments were not valid JSON."
+        }), None
+
+    file_path = tool_args.get("path")
+    if not file_path:
+        return json.dumps({
+            "success": False,
+            "error": "Missing required argument: path."
+        }), None
+
+    file_content = read_text_file(file_history, file_path)
+
+    if file_content is None:
+        return json.dumps({
+            "success": False,
+            "path": file_path,
+            "error": "Could not read that supported text file."
+        }), None
+
+    return json.dumps({
+        "success": True,
+        "path": file_path,
+        "content": file_content
+    }), file_path
 
 
 # Conversation history handling functions
@@ -254,6 +309,12 @@ def get_token_usage(response):
     else:
         return create_empty_token_usage()
 
+def add_token_usage(tokens, new_tokens):
+    tokens["input_tokens"] += new_tokens["input_tokens"]
+    tokens["output_tokens"] += new_tokens["output_tokens"]
+    tokens["total_tokens"] += new_tokens["total_tokens"]
+    return tokens
+
 def add_usage_log(event, user_input, usage, files_used=None, success=None):
     log_entry = create_default_logging()
     log_entry.update({
@@ -279,43 +340,26 @@ def print_response(answer, files_used, follow_up_questions):
         print("모 : " + "Follow-up questions:\n" + "\n".join(follow_up_questions))
 
 def print_token_usage(token_usage):
-    print(
-        f"모 : Tokens used: "
-        f"{token_usage['input_tokens']} input, "
-        f"{token_usage['output_tokens']} output, "
-        f"{token_usage['total_tokens']} total"
-    )
-
+    if token_usage:
+        print(
+            f"모 : Tokens used: "
+            f"{token_usage['input_tokens']} input, "
+            f"{token_usage['output_tokens']} output, "
+            f"{token_usage['total_tokens']} total"
+        )
+    else: 
+        print("모 : ( ╹ -╹)? Token data not found.")
 
 # Prompt building and AI interaction functions
-def build_prompt(conversation_history, file_history):
+def build_prompt(conversation_history):
     prompt = []
-    included_files = []
+
     for msg in conversation_history:
-        # Strip app-only metadata before sending messages to the model.
         prompt.append({
             "role": msg.get("role"),
             "content": msg.get("content")
         })
-        metadata = msg.get("metadata", {})
-        if msg.get("role") == "user" and metadata.get("used_file"):
-            file_paths = metadata.get("file_paths", [])
-            for file_path in file_paths:
-                if file_path not in included_files:
-                    included_files.append(file_path)
 
-    file_context = ""
-    for file_path in included_files:
-        file_content = read_text_file(file_history, file_path)
-        if file_content is not None:
-            file_context += f"\n\nFile: {file_path}\n{file_content}"
-            
-    if file_context:
-        prompt.insert(0, {
-            "role": "developer",
-            "content": f"Use this file context when answering:{file_context}"
-        })
-    # print(json.dumps(prompt, indent=2))
     return prompt
 
 def get_event_message(event):
@@ -335,7 +379,71 @@ def get_event_message(event):
 
     return "No details provided."
 
-def ask_ai_stream(client, conversation_history):
+def get_tool_calls(response):
+    return [
+        item for item in getattr(response, "output", []) or []
+        if getattr(item, "type", None) == "function_call"
+    ]
+
+def response_output_to_input_items(response):
+    # helper function to take the model’s previous response.output items and make them safe to include in the next input.
+    input_items = []
+
+    output_items = getattr(response, "output", []) or []
+
+    for output_item in output_items:
+        if hasattr(output_item, "model_dump"):
+            input_items.append(output_item.model_dump(exclude_none=True))
+        else:
+            input_items.append(output_item)
+    return input_items
+
+def ask_ai_with_tools(client, model_input, file_history):
+    current_input = list(model_input)
+    files_used_by_tools = []
+    token_usage_sum = create_empty_token_usage()
+
+    rounds=0
+
+    while True: 
+        response_text, response = ask_ai_stream(client, current_input, tools=[READ_TEXT_FILE_TOOL])
+        if not response:
+            return response_text, None, files_used_by_tools, token_usage_sum
+        
+        token_usage_sum = add_token_usage(token_usage_sum, get_token_usage(response))
+        tool_calls = get_tool_calls(response)
+
+        if not tool_calls: 
+            # No tool calls needed, returning response as-is
+            return response_text, response, files_used_by_tools, token_usage_sum
+
+        if rounds >= MAX_TOOL_CALL_ROUNDS:
+            print("모 : (,; ⩌ ;,) Exceeded max tool count... does the file exist? ")
+            return "", None, files_used_by_tools, token_usage_sum
+        
+        # append current response to the input
+        current_input.extend(response_output_to_input_items(response))
+
+        print("모 : (ᓀ‸ᓂ) Tool calls needed...")
+        # make the tool calls requested by the model
+        for tool_call in tool_calls:
+            tool_output, file_path = execute_read_text_file_tool(
+                file_history,
+                tool_call.arguments
+            )
+
+            if file_path and file_path not in files_used_by_tools:
+                files_used_by_tools.append(file_path)
+
+            # add the tool response to the current input
+            current_input.append({
+                "type": "function_call_output",
+                "call_id": tool_call.call_id,
+                "output": tool_output
+            })
+        rounds += 1
+
+def ask_ai_stream(client, conversation_history, tools=None):
     streamed_text = ""
     final_response = None
     last_thinking_time = time.monotonic()
@@ -344,6 +452,7 @@ def ask_ai_stream(client, conversation_history):
         stream = client.responses.create(
             model=MODEL_NAME,
             input=conversation_history,
+            tools=tools or [],
             text={
                 "format": {
                     "type": "json_schema",
@@ -432,59 +541,37 @@ def run_app(client):
                 print_usage_log()
                 continue
 
-            ## Check if the user input contains a valid text file path
-            file_paths = find_text_file_paths(user_input)
-            if file_paths:
-                readable_file_paths = []
-                for file_path in file_paths:
-                    file_content = read_text_file(file_history, file_path)
-
-                    if file_content is not None:
-                        readable_file_paths.append(file_path)
-                
-                if readable_file_paths:
-                    print(f"모 : (•̀ᴗ•́ )و I found and read the following files: {', '.join(readable_file_paths)}")
-                else:
-                    print("모 : ( ˶°ㅁ°) !! I couldn't read any of the specified files.")
-                    continue
-
-                metadata = {
-                    "used_file": True,
-                    "file_paths": readable_file_paths,
-                }
-                add_conversation_history(conversation_history, "user", user_input, metadata=metadata)
-            else :
-                add_conversation_history(conversation_history, "user", user_input)
+            add_conversation_history(conversation_history, "user", user_input)
             
             # Build the prompt and ask the AI model for a response
-            model_input = build_prompt(conversation_history, file_history)
-            response_text, response = ask_ai_stream(client, model_input)
+            model_input = build_prompt(conversation_history)
+            response_text, response, tool_files_used, token_usage_sum = ask_ai_with_tools(client, model_input, file_history)
 
             # Handle the AI model's response
             if response:
-                token_usage = get_token_usage(response)
                 try:
                     parsed_response = parse_response_text(response_text)
                 except json.JSONDecodeError:
                     print("모 : ( ˶°ㅁ°) !! Error parsing the response. Please try again.")
-                    add_usage_log("model_response_parse_error", user_input, token_usage, success=False)
+                    add_usage_log("model_response_parse_error", user_input, token_usage_sum, success=False)
                     continue
 
                 answer = parsed_response.get("answer", "No answer provided.")
-                files_used = parsed_response.get("files_used", [])
+                files_used = tool_files_used
                 follow_up_questions = parsed_response.get("follow_up_questions", [])
 
                 print_response(answer, files_used, follow_up_questions)
-                print_token_usage(token_usage)
+                print_token_usage(token_usage_sum)
 
-                add_conversation_history(conversation_history, "assistant", answer, metadata={"response_output": parsed_response, "token_usage": token_usage})
+                add_conversation_history(conversation_history, "assistant", answer, metadata={"response_output": parsed_response, "token_usage": token_usage_sum})
 
-                add_usage_log("model_response", user_input, token_usage, files_used=files_used)
+                add_usage_log("model_response", user_input, token_usage_sum, files_used=files_used)
             else: 
                 add_usage_log("model_response_error", user_input, create_empty_token_usage(), success=False)
                 print("모 : My brain shortcuited ( ꩜ ᯅ ꩜;)⁭ ⁭please try again ")
     except KeyboardInterrupt:
         print("\n모 : Goodbye! (˶ᵔᗜᵔ˶)ﾉﾞ")
+
 def main():
     validate_openai_model()
     api_key = validate_openai_api_key()

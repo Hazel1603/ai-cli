@@ -4,7 +4,7 @@ A small command-line AI assistant for learning how to build agentic AI with the 
 
 This project follows the roadmap in `FUNCTIONAL_SPEC.md`. The current version is:
 
-## v0.6 - Streaming Responses
+## v0.7 - Real OpenAI Tool Calling
 
 The app currently:
 
@@ -15,11 +15,14 @@ The app currently:
 - Saves conversation history to `conversation_history.json`.
 - Reloads saved conversation history when the app starts.
 - Lets the user clear saved conversation history.
-- Detects supported text file paths in user messages.
-- Reads local `.txt`, `.md`, `.py`, `.json`, and `.csv` files.
-- Supports multiple file paths in a single user message.
+- Provides a real OpenAI function tool named `read_text_file`.
+- Lets the model decide when it needs to read a local file.
+- Executes model-requested file reads in Python.
+- Sends tool results back to the model as `function_call_output` items.
+- Supports multi-round tool calling when one file points to another file.
+- Reads local `.txt`, `.md`, `.py`, `.json`, and `.csv` files through the tool.
 - Keeps file contents in runtime file memory so repeated references do not need to reread the file from disk.
-- Adds each referenced file's contents to the model input once so the assistant can summarize or answer questions about the files.
+- Tracks files that were successfully read by the tool.
 - Requests structured assistant responses using a JSON Schema.
 - Parses each model response into fields for `answer`, `summary`, `files_used`, and `follow_up_questions`.
 - Streams model response events internally while collecting structured JSON output.
@@ -90,6 +93,18 @@ Ask about multiple supported files:
 𖨆 : compare README.md and FUNCTIONAL_SPEC.md
 ```
 
+Test multi-round tool calling with the included file trail:
+
+```text
+𖨆 : Follow the file trail starting at assets/tool_call_rounds/start.md. What is the final launch phrase, and what path did you follow?
+```
+
+The assistant should read each file in the trail and eventually find:
+
+```text
+bright lantern protocol
+```
+
 Ask a follow-up question that relies on earlier context:
 
 ```text
@@ -155,7 +170,6 @@ python3 -m unittest discover -s tests
 - Ask questions across multiple files more deeply.
 - Summarize an entire folder.
 - Stream the final answer text directly in the terminal.
-- Add real OpenAI tool calling for filesystem actions.
 - Let the user choose the model from `.env`.
 - Add commands for deleting or exporting conversation history.
 - Add safer limits for very large files.
@@ -170,3 +184,4 @@ python3 -m unittest discover -s tests
 - v0.4 - Structured outputs.
 - v0.5 - Logging and token usage.
 - v0.6 - Streaming responses.
+- v0.7 - Real OpenAI tool calling.

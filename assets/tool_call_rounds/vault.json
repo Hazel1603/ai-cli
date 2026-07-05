@@ -1,0 +1,6 @@
+{
+  "trail_status": "active",
+  "instruction": "Read the final file before answering.",
+  "next_file": "assets/tool_call_rounds/final.md",
+  "warning": "The launch phrase is not stored in this JSON file."
+}
